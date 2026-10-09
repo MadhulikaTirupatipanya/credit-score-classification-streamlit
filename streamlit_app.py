@@ -184,50 +184,57 @@ with st.sidebar:
         st.error(f"No model files found in {MODELS_DIR}")
         st.stop()
     selected_name = st.selectbox("Choose a trained model", list(available.keys()))
-    # Show this selected model's saved held-out metrics immediately.
-    metrics_path = DEPLOY_DIR / "model_metrics.csv"
-    if metrics_path.exists():
-        metrics_df = pd.read_csv(metrics_path)
-        model_col = next((c for c in ["Model", "Model Name", "model", "model_name"] if c in metrics_df.columns), None)
-        if model_col:
-            matched = metrics_df[metrics_df[model_col].astype(str).str.strip().str.casefold() == selected_name.strip().casefold()]
-            if matched.empty:
-                aliases = {"decision tree": ["decision tree", "decisiontree"],
-                           "logistic regression": ["logistic regression", "logisticregression"],
-                           "knn": ["knn", "k-nearest neighbors", "k nearest neighbors"],
-                           "adaboost": ["adaboost", "ada boost"],
-                           "lightgbm": ["lightgbm", "light gbm"],
-                           "xgboost": ["xgboost", "xg boost"],
-                           "bagging": ["bagging", "bagging classifier"]}
-                possible = aliases.get(selected_name.casefold(), [selected_name.casefold()])
-                matched = metrics_df[metrics_df[model_col].astype(str).str.strip().str.casefold().isin(possible)]
-            if not matched.empty:
-                row = matched.iloc[-1]
-                st.subheader("Model performance")
-                metric_aliases = [
-                    ("Accuracy", ["Test Accuracy", "Accuracy", "accuracy", "test_accuracy"]),
-                    ("Precision", ["Test Precision", "Test Precision (Macro)", "Precision", "precision", "test_precision"]),
-                    ("Recall", ["Test Recall", "Test Recall (Macro)", "Recall", "recall", "test_recall"]),
-                    ("F1 Score", ["Test F1", "Test F1 (Macro)", "F1", "F1 Score", "f1", "test_f1"]),
-                ]
-                cols = st.columns(4)
-                shown = 0
-                for title, candidates in metric_aliases:
-                    key = next((c for c in candidates if c in metrics_df.columns and pd.notna(row.get(c))), None)
-                    if key:
-                        value = float(row[key])
-                        if value <= 1.0:
-                            value *= 100
-                        cols[shown].metric(title, f"{value:.2f}%")
-                        shown += 1
-                if shown == 0:
-                    st.dataframe(matched, use_container_width=True, hide_index=True)
+
+# Show metrics in the main page, where each value has enough width to be readable.
+st.subheader("Selected model performance")
+metrics_path = DEPLOY_DIR / "model_metrics.csv"
+metrics_shown = False
+if metrics_path.exists():
+    metrics_df = pd.read_csv(metrics_path)
+    model_col = next((c for c in ["Model", "Model Name", "model", "model_name"] if c in metrics_df.columns), None)
+    if model_col:
+        selected_key = selected_name.strip().casefold()
+        aliases = {
+            "decision tree": ["decision tree", "decisiontree"],
+            "logistic regression": ["logistic regression", "logisticregression"],
+            "knn": ["knn", "k-nearest neighbors", "k nearest neighbors"],
+            "adaboost": ["adaboost", "ada boost"],
+            "lightgbm": ["lightgbm", "light gbm"],
+            "xgboost": ["xgboost", "xg boost"],
+            "bagging": ["bagging", "bagging classifier"],
+        }
+        possible = aliases.get(selected_key, [selected_key])
+        matched = metrics_df[metrics_df[model_col].astype(str).str.strip().str.casefold().isin(possible)]
+        if not matched.empty:
+            row = matched.iloc[-1]
+            metric_aliases = [
+                ("Accuracy", ["Test Accuracy", "Accuracy", "accuracy", "test_accuracy"]),
+                ("Precision", ["Test Precision", "Test Precision (Macro)", "Precision", "precision", "test_precision"]),
+                ("Recall", ["Test Recall", "Test Recall (Macro)", "Recall", "recall", "test_recall"]),
+                ("F1 Score", ["Test F1", "Test F1 (Macro)", "F1", "F1 Score", "f1", "test_f1"]),
+            ]
+            metric_values = []
+            for title, candidates in metric_aliases:
+                key = next((c for c in candidates if c in metrics_df.columns and pd.notna(row.get(c))), None)
+                if key:
+                    value = float(row[key])
+                    if value <= 1.0:
+                        value *= 100
+                    metric_values.append((title, f"{value:.2f}%"))
+            if metric_values:
+                cols = st.columns(len(metric_values))
+                for col, (title, value) in zip(cols, metric_values):
+                    col.metric(title, value)
+                metrics_shown = True
             else:
-                st.info("Saved performance metrics for this model were not found in model_metrics.csv.")
+                st.dataframe(matched, use_container_width=True, hide_index=True)
+                metrics_shown = True
         else:
-            st.info("model_metrics.csv has no recognizable model-name column.")
+            st.info("Saved performance metrics for this model were not found in model_metrics.csv.")
     else:
-        st.info("model_metrics.csv is missing from the deployment folder.")
+        st.info("model_metrics.csv has no recognizable model-name column.")
+else:
+    st.info("model_metrics.csv is missing from the deployment folder.")
 
 st.subheader("Upload customer data")
 st.write("Upload a CSV containing the 24 cleaned predictor columns. The selected trained model will predict **Poor**, **Standard**, or **Good** for each customer.")
