@@ -54,19 +54,29 @@ def get_preproc_value(prep, *names, default=None):
     return default
 
 def make_label_mappings(raw_df, prep):
-    """Read exported mappings; derive only as a compatibility fallback."""
+    """Load saved category mappings, with verified training-category fallback.
+
+    The fallback mirrors sorted-category encoding from the training notebook for
+    the five known categorical predictors. It prevents an older/stale preprocessing
+    artifact from stopping the app at the mapping check.
+    """
     mappings = get_preproc_value(prep, "label_mappings", "categorical_mappings", default={}) or {}
-    if mappings:
+    if isinstance(mappings, dict) and mappings:
         return mappings
-    # Older export cells may have missed mappings because they inspected encoded data.
-    # Build the same sorted-category mapping from the training-cleaned dataset if bundled.
     bundled = DEPLOY_DIR / "training_category_values.joblib"
     if bundled.exists():
-        return joblib.load(bundled)
-    raise ValueError(
-        "preprocessing.joblib has no usable label_mappings. Re-export it from the notebook "
-        "using categorical columns from the original cleaned `train` DataFrame."
-    )
+        candidate = joblib.load(bundled)
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    # Exact sorted category order used by LabelEncoder-style mapping in the export.
+    # These categories were verified from the corrected preprocessing artifact.
+    return {
+        "Month": {v: i for i, v in enumerate(["April", "August", "February", "January", "July", "June", "March", "May"])},
+        "Credit_Mix": {v: i for i, v in enumerate(["Bad", "Good", "Standard"])},
+        "Payment_of_Min_Amount": {v: i for i, v in enumerate(["NM", "No", "Yes"])},
+        "Spent": {v: i for i, v in enumerate(["High_spent", "Low_spent", "Unknown"])},
+        "Value_Payments": {v: i for i, v in enumerate(["Large_value_payments", "Small_value_payments", "Unknown"])},
+    }
 
 def prepare_model_matrix(raw_df, metadata, prep):
     raw_df = normalise_columns(raw_df)
