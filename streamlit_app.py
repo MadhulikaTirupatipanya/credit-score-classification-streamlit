@@ -151,7 +151,7 @@ def display_class(value):
 
 st.title("💳 Credit Score Classification")
 st.markdown("Predict a customer's credit-score category using the trained capstone models.")
-st.caption("Input: cleaned customer data • Pipeline: saved encoding → binning → scaling → classifier")
+st.caption("Upload cleaned customer data to classify the credit score as Poor, Standard, or Good.")
 
 try:
     metadata, scaler, preprocessing = load_artifacts()
@@ -184,16 +184,53 @@ with st.sidebar:
         st.error(f"No model files found in {MODELS_DIR}")
         st.stop()
     selected_name = st.selectbox("Choose a trained model", list(available.keys()))
-    st.caption(f"Expected model features: {len(metadata.get('feature_columns', []))}")
-    if st.button("Show model metrics"):
-        metrics_path = DEPLOY_DIR / "model_metrics.csv"
-        if metrics_path.exists():
-            st.dataframe(pd.read_csv(metrics_path), use_container_width=True, hide_index=True)
+    # Show this selected model's saved held-out metrics immediately.
+    metrics_path = DEPLOY_DIR / "model_metrics.csv"
+    if metrics_path.exists():
+        metrics_df = pd.read_csv(metrics_path)
+        model_col = next((c for c in ["Model", "Model Name", "model", "model_name"] if c in metrics_df.columns), None)
+        if model_col:
+            matched = metrics_df[metrics_df[model_col].astype(str).str.strip().str.casefold() == selected_name.strip().casefold()]
+            if matched.empty:
+                aliases = {"decision tree": ["decision tree", "decisiontree"],
+                           "logistic regression": ["logistic regression", "logisticregression"],
+                           "knn": ["knn", "k-nearest neighbors", "k nearest neighbors"],
+                           "adaboost": ["adaboost", "ada boost"],
+                           "lightgbm": ["lightgbm", "light gbm"],
+                           "xgboost": ["xgboost", "xg boost"],
+                           "bagging": ["bagging", "bagging classifier"]}
+                possible = aliases.get(selected_name.casefold(), [selected_name.casefold()])
+                matched = metrics_df[metrics_df[model_col].astype(str).str.strip().str.casefold().isin(possible)]
+            if not matched.empty:
+                row = matched.iloc[-1]
+                st.subheader("Model performance")
+                metric_aliases = [
+                    ("Accuracy", ["Test Accuracy", "Accuracy", "accuracy", "test_accuracy"]),
+                    ("Precision", ["Test Precision", "Test Precision (Macro)", "Precision", "precision", "test_precision"]),
+                    ("Recall", ["Test Recall", "Test Recall (Macro)", "Recall", "recall", "test_recall"]),
+                    ("F1 Score", ["Test F1", "Test F1 (Macro)", "F1", "F1 Score", "f1", "test_f1"]),
+                ]
+                cols = st.columns(4)
+                shown = 0
+                for title, candidates in metric_aliases:
+                    key = next((c for c in candidates if c in metrics_df.columns and pd.notna(row.get(c))), None)
+                    if key:
+                        value = float(row[key])
+                        if value <= 1.0:
+                            value *= 100
+                        cols[shown].metric(title, f"{value:.2f}%")
+                        shown += 1
+                if shown == 0:
+                    st.dataframe(matched, use_container_width=True, hide_index=True)
+            else:
+                st.info("Saved performance metrics for this model were not found in model_metrics.csv.")
         else:
-            st.info("model_metrics.csv was not included in the deployment folder.")
+            st.info("model_metrics.csv has no recognizable model-name column.")
+    else:
+        st.info("model_metrics.csv is missing from the deployment folder.")
 
-st.subheader("Upload cleaned customer data")
-st.write("Upload a CSV containing the **24 cleaned predictor columns** used immediately before encoding and binning in the training notebook. Do not upload the original raw Kaggle file with ID/Name/SSN/Type_of_Loan/Payment_Behaviour fields.")
+st.subheader("Upload customer data")
+st.write("Upload a CSV containing the 24 cleaned predictor columns. The selected trained model will predict **Poor**, **Standard**, or **Good** for each customer.")
 with st.expander("Required columns"):
     st.code(", ".join(EXPECTED_RAW_COLUMNS), language="text")
 
@@ -209,27 +246,52 @@ if upload is not None:
         st.write(f"Uploaded dataset: **{len(uploaded):,} rows × {len(uploaded.columns)} columns**")
         st.dataframe(uploaded.head(5), use_container_width=True)
         if st.button("Predict credit score", type="primary"):
-            with st.spinner("Preparing features and running prediction..."):
+            with st.spinner("Preparing features and predicting credit scores..."):
                 X = prepare_model_matrix(uploaded, metadata, preprocessing)
                 X_scaled = pd.DataFrame(scaler.transform(X), columns=X.columns, index=X.index)
                 model = load_model(str(available[selected_name]))
                 predictions = model.predict(X_scaled)
+                prediction_labels = [display_class(p) for p in predictions]
                 output = uploaded.copy()
-                output["Predicted_Credit_Score"] = [display_class(p) for p in predictions]
+                output["Predicted_Credit_Score"] = prediction_labels
+                probability_frame = None
                 if hasattr(model, "predict_proba"):
                     try:
                         probs = model.predict_proba(X_scaled)
                         classes = list(getattr(model, "classes_", range(probs.shape[1])))
-                        for j, cls in enumerate(classes):
-                            output[f"Probability_{display_class(cls)}"] = np.round(probs[:, j], 5)
+                        probability_frame = pd.DataFrame({
+                            f"Probability_{display_class(cls)}": np.round(probs[:, j] * 100, 2)
+                            for j, cls in enumerate(classes)
+                        }, index=output.index)
+                        output = pd.concat([output, probability_frame], axis=1)
                     except Exception:
-                        pass
+                        probability_frame = None
                 st.success(f"Prediction completed using {selected_name}.")
-                st.dataframe(output.head(100), use_container_width=True)
-                st.download_button("Download predictions CSV", output.to_csv(index=False).encode("utf-8"),
+                counts = pd.Series(prediction_labels).value_counts().reindex(["Good", "Standard", "Poor"], fill_value=0)
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Good", int(counts["Good"]))
+                c2.metric("Standard", int(counts["Standard"]))
+                c3.metric("Poor", int(counts["Poor"]))
+                st.subheader("Predicted credit score")
+                if len(output) == 1:
+                    score = prediction_labels[0]
+                    if score == "Good":
+                        st.success(f"Credit Score: **{score}**")
+                    elif score == "Poor":
+                        st.error(f"Credit Score: **{score}**")
+                    else:
+                        st.warning(f"Credit Score: **{score}**")
+                    if probability_frame is not None:
+                        st.write("Class probabilities")
+                        st.dataframe(probability_frame, use_container_width=True, hide_index=True)
+                else:
+                    st.dataframe(output[["Predicted_Credit_Score"]].assign(Customer_Row=np.arange(1, len(output) + 1))[ ["Customer_Row", "Predicted_Credit_Score"]], use_container_width=True, hide_index=True)
+                st.subheader("Prediction results")
+                st.dataframe(output.head(100), use_container_width=True, hide_index=True)
+                st.download_button("Download prediction results (optional)", output.to_csv(index=False).encode("utf-8"),
                                    file_name="credit_score_predictions.csv", mime="text/csv")
                 if "Credit_Score" in uploaded.columns:
-                    st.info("The uploaded target column is not used as an input. This app predicts labels; it does not report test accuracy unless you run a separate evaluation against known labels.")
+                    st.info("The existing Credit_Score column is not used as an input. Accuracy on this upload is not calculated unless actual labels are explicitly evaluated against predictions.")
     except Exception as exc:
         st.error(f"Could not process this file: {exc}")
 
